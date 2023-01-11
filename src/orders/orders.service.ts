@@ -19,7 +19,7 @@ export class OrdersService {
     private orderRepository: Repository<Order>,
   ) {}
 
-  public getBuyOrders(price: number, self) {
+  public getBuyOrders(price: number, self: OrdersService) {
     const where = {
       direction: Direction.BUY,
       quantity: MoreThan(0),
@@ -33,7 +33,7 @@ export class OrdersService {
     });
   }
 
-  private getSellOrders(price: number, self) {
+  private getSellOrders(price: number, self: OrdersService) {
     const where = {
       direction: Direction.SELL,
       quantity: MoreThan(0),
@@ -93,40 +93,52 @@ export class OrdersService {
         return b.price - a.price !== 0 ? b.price - a.price : a.index - b.index;
       }
     });
-    const sourceOrdersQueue =
-      sourceOrder.type === OrderType.LIMIT
-        ? [sourceOrder]
-        : packOrderIntoArray(sourceOrder);
+    let sourceOrdersQueue = packOrderIntoArray(
+      sourceOrder,
+      sourceOrder.quantity,
+    );
 
     const transactions = [];
     const targetOrdersDb = await targetOrdersFunction(sourceOrder.price, self);
-    for (const sourceOrder of sourceOrdersQueue) {
-      while (sourceOrder.quantity > 0 && targetOrdersQueue.length) {
-        if (!targetOrdersQueue || !targetOrdersQueue.length) {
-          break;
-        }
-        const targetOrder = targetOrdersQueue[0];
-        const transactionQuantity =
-          targetOrder.quantity >= sourceOrder.quantity
-            ? sourceOrder.quantity
-            : targetOrder.quantity;
-        const targetOrderDb = targetOrdersDb.find(
-          (i) => i.id === targetOrder.id,
+    for (const targetOrder of targetOrdersQueue) {
+      if (!sourceOrdersQueue.length && sourceOrder.quantity > 0) {
+        sourceOrdersQueue = packOrderIntoArray(
+          sourceOrder,
+          sourceOrder.quantity,
         );
-        sourceOrder.quantity -= transactionQuantity;
-        targetOrderDb.quantity -= transactionQuantity;
-        targetOrdersQueue.shift();
-        transactions.push({
-          [sourceOrder.direction === Direction.BUY
-            ? 'sellOrderId'
-            : 'buyOrderId']: targetOrder.id,
-          [sourceOrder.direction === Direction.BUY
-            ? 'buyOrderId'
-            : 'sellOrderId']: sourceOrder.id,
-          price: targetOrder.price,
-          quantity: transactionQuantity,
-        });
       }
+      const sourceOrderTemp = sourceOrdersQueue[0];
+
+      if (
+        !sourceOrderTemp ||
+        sourceOrderTemp.quantity === 0 ||
+        sourceOrder.quantity === 0
+      ) {
+        break;
+      }
+      const transactionQuantity =
+        targetOrder.quantity >= sourceOrderTemp.quantity
+          ? sourceOrderTemp.quantity
+          : targetOrder.quantity;
+
+      const targetOrderDb = targetOrdersDb.find((i) => i.id === targetOrder.id);
+      sourceOrderTemp.quantity -= transactionQuantity;
+      if (sourceOrder.quantity > 0) {
+        sourceOrder.quantity -= transactionQuantity;
+      }
+
+      targetOrderDb.quantity -= transactionQuantity;
+      sourceOrdersQueue.shift();
+      transactions.push({
+        [sourceOrderTemp.direction === Direction.BUY
+          ? 'sellOrderId'
+          : 'buyOrderId']: targetOrder.id,
+        [sourceOrderTemp.direction === Direction.BUY
+          ? 'buyOrderId'
+          : 'sellOrderId']: sourceOrderTemp.id,
+        price: targetOrder.price,
+        quantity: transactionQuantity,
+      });
     }
     await this.orderRepository.save(targetOrdersDb);
     await this.orderRepository.save(sourceOrder);
@@ -152,11 +164,15 @@ export class OrdersService {
   }
 }
 
-function packOrderIntoArray(order) {
+function packOrderIntoArray(order: OrderDto, initialQuantity: number) {
+  if (order.type === OrderType.LIMIT) {
+    return [{ ...order }];
+  }
   const ordersArray = [];
-  while (order.quantity > 0) {
-    const value = order.peak < order.quantity ? order.peak : order.quantity;
-    order.quantity -= value;
+
+  while (initialQuantity > 0) {
+    const value = order.peak < initialQuantity ? order.peak : initialQuantity;
+    initialQuantity -= value;
     ordersArray.push({ ...order, ...{ quantity: value } });
   }
   return ordersArray;
